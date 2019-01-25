@@ -9,72 +9,82 @@ import (
 	"strings"
 )
 
+type command struct {
+	name, params, desc string
+}
+
 var (
-	menus = map[string][]string{
+	menus = map[string][]command{
 		"main": {
-			"list",
-			"show",
-			"select",
-			"devices",
-			"paired-devices",
-			"system-alias",
-			"reset-alias",
-			"power",
-			"pairable",
-			"discoverable",
-			"agent",
-			"default-agent",
-			"advertise",
-			"set-alias",
-			"scan",
-			"info",
-			"pair",
-			"trust",
-			"untrust",
-			"block",
-			"unblock",
-			"remove",
-			"connect",
-			"disconnect",
+			{"list", "", "List available controllers"},
+			{"show", "[ctrl]", "Controller information"},
+			{"select", "<ctrl>", "Select default controller"},
+			{"devices", "", "List available devices"},
+			{"paired-devices", "", "List paired devices"},
+			{"system-alias", "<name>", "Set controller alias"},
+			{"reset-alias", "", "Reset controller alias"},
+			{"power", "<on/off>", "Set controller power"},
+			{"pairable", "<on/off>", "Set controller pairable mode"},
+			{"discoverable", "<on/off>", "Set controller discoverable mode"},
+			{"agent", "<on/off/capability>", "Enable/disable agent with given capability"},
+			{"default-agent", "", "Set agent as the default one"},
+			{"advertise", "<on/off/type>", "Enable/disable advertising with given type"},
+			{"set-alias", "<alias>", "Set device alias"},
+			{"scan", "<on/off>", "Scan for devices"},
+			{"info", "[dev]", "Device information"},
+			{"pair", "[dev]", "Pair with device"},
+			{"trust", "[dev]", "Trust device"},
+			{"untrust", "[dev]", "Untrust device"},
+			{"block", "[dev]", "Block device"},
+			{"unblock", "[dev]", "Unblock device"},
+			{"remove", "<dev>", "Remove device"},
+			{"connect", "<dev>", "Connect device"},
+			{"disconnect", "[dev]", "Disconnect device"},
 		},
 		"advertise": {
-			"set-uuids",
-			"set-service",
-			"set-manufacturer",
-			"set-tx-power",
-			"set-name",
-			"set-appearance",
-			"set-duration",
-			"set-timeout",
+			{"set-uuids", "[uuid1 uuid2 ...]", "Set advertise uuids"},
+			{"set-service", "[uuid] [data=xx xx ...]", "Set advertise service data"},
+			{"set-manufacturer", "[id]", "Set advertise manufacturer data"},
+			{"set-tx-power", "<on/off>", "Enable/disable TX power to be advertised"},
+			{"set-name", "<on/off/name>", "Enable/disable local name to be advertised"},
+			{"set-appearance", "<value>", "Set custom appearance to be advertised"},
+			{"set-duration", "<seconds>", "Set advertise duration"},
+			{"set-timeout", "<seconds>", "Set advertise timeout"},
 		},
 		"scan": {
-			"uuids",
-			"rssi",
-			"pathloss",
-			"transport",
-			"duplicate-data",
-			"clear",
+			{"uuids", "[all/uuid1 uuid2 ...]", "Set/Get UUIDs filter"},
+			{"rssi", "[rssi]", "Set/Get RSSI filter, and clears pathloss"},
+			{"pathloss", "[pathloss]", "Set/Get Pathloss filter, and clears RSSI"},
+			{"transport", "[transport]", "Set/Get transport filter"},
+			{"duplicate-data", "[on/off]", "Set/Get duplicate data filter"},
+			{"clear", "[uuids/rssi/pathloss/transport/duplicate-data]", "Clears discovery filter"},
 		},
 		"gatt": {
-			"list-attributes",
-			"select-attribute",
-			"attribute-info",
-			"read",
-			"write",
-			"acquire-write",
-			"release-write",
-			"acquire-notify",
-			"release-notify",
-			"notify",
-			"register-application",
-			"unregister-application",
-			"register-service",
-			"unregister-service",
-			"register-characteristic",
-			"unregister-characteristic",
-			"register-descriptor",
-			"unregister-descriptor",
+			{"list-attributes", "[dev]", "List attributes"},
+			{"select-attribute", "<attribute/UUID>", "Select attribute"},
+			{"attribute-info", "[attribute/UUID]", "Attribute info"},
+			{"read", "", "Read attribute value"},
+			{"write", "<data=xx xx ...>", "Write attribute value"},
+			{"acquire-write", "", "Acquire Write file descriptor"},
+			{"release-write", "", "Release Write file descriptor"},
+			{"acquire-notify", "", "Acquire Notify file descriptor"},
+			{"release-notify", "", "Release Notify file descriptor"},
+			{"notify", "<on/off>", "Notify attribute value"},
+			{"register-application", "[UUID ...]", "Register profile to connect"},
+			{"unregister-application", "", "Unregister profile"},
+			{"register-service", "<UUID>", "Register application service"},
+			{"unregister-service", "<UUID/object>", "Unregister application service"},
+			{"register-characteristic", "<UUID> <Flags=read,write,notify...>", "Register application characteristic"},
+			{"unregister-characteristic", "<UUID/object>", "Unregister application characteristic"},
+			{"register-descriptor", "<UUID> <Flags=read,write...>", "Register application descriptor"},
+			{"unregister-descriptor", "<UUID/object>", "Unregister application descriptor"},
 		},
+	}
+
+	commonCmds = []command{
+		{"version", "", "Print version"},
+		{"exit", "", "Exit"},
+		{"quit", "", "Quit"},
 	}
 )
 
@@ -93,6 +103,7 @@ func run() error {
 	}
 
 	// run bluetoothctl in a separate thread
+	// TODO: track whether bluetoothctl is still alive
 	errc := make(chan error)
 	go func() {
 		errc <- runCmd(cmd)
@@ -116,14 +127,15 @@ func run() error {
 
 		// print help for all menus
 		if isCmd(l, "help") {
-			menu = printHelp(stdin, menu)
+			printHelp()
+			_, _ = stdin.Write([]byte("\n"))
 			continue
 		}
 
 	loop:
 		for m, cs := range menus {
 			for _, c := range cs {
-				if isCmd(l, c) {
+				if isCmd(l, c.name) {
 					menu = jumpToSubMenu(stdin, menu, m)
 					break loop
 				}
@@ -153,30 +165,42 @@ func runCmd(cmd *exec.Cmd) error {
 	return nil
 }
 
-func isCmd(l, c string) bool {
-	return strings.Split(l, " ")[0] == c
+func isCmd(cline, cname string) bool {
+	return strings.Split(cline, " ")[0] == cname
 }
 
-func jumpToSubMenu(stdin io.WriteCloser, s, d string) string {
-	if s != d {
-		if s != "main" {
+func jumpToSubMenu(stdin io.WriteCloser, src, dst string) string {
+	if src != dst {
+		if src != "main" {
 			// back to main menu from submenus
 			_, _ = stdin.Write([]byte("back\n"))
-			s = "main"
+			src = "main"
 		}
-		if d != "main" {
+		if dst != "main" {
 			// from main menu to submenus
-			stdin.Write([]byte("menu " + d + "\n"))
+			stdin.Write([]byte("menu " + dst + "\n"))
 		}
 	}
 
-	return d
+	return dst
 }
 
-// TODO: eliminate duplications
-func printHelp(stdin io.WriteCloser, menu string) string {
-	for m := range menus {
-		menu = jumpToSubMenu(stdin, menu, m)
+func printHelp() {
+	pl := func(cmd *command) {
+		fmt.Fprintf(os.Stderr, "  - %-30s %-50s %s\n", cmd.name, cmd.params, cmd.desc)
 	}
-	return menu
+
+	for m, cs := range menus {
+		fmt.Fprintln(os.Stderr, "---------------")
+		fmt.Fprintln(os.Stderr, m+":")
+		for _, c := range cs {
+			pl(&c)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "---------------")
+	fmt.Fprintln(os.Stderr, "common:")
+	for _, c := range commonCmds {
+		pl(&c)
+	}
 }
