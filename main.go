@@ -132,16 +132,7 @@ func run() error {
 			continue
 		}
 
-	loop:
-		for m, cs := range menus {
-			for _, c := range cs {
-				if isCmd(l, c.name) {
-					menu = jumpToSubMenu(stdin, menu, m)
-					break loop
-				}
-			}
-		}
-
+		menu = jumpToSubMenu(stdin, menu, l)
 		_, _ = stdin.Write([]byte(l + "\n"))
 	}
 
@@ -169,20 +160,30 @@ func isCmd(cline, cname string) bool {
 	return strings.Split(cline, " ")[0] == cname
 }
 
-func jumpToSubMenu(stdin io.WriteCloser, src, dst string) string {
-	if src != dst {
-		if src != "main" {
-			// back to main menu from submenus
-			_, _ = stdin.Write([]byte("back\n"))
-			src = "main"
-		}
-		if dst != "main" {
-			// from main menu to submenus
-			stdin.Write([]byte("menu " + dst + "\n"))
+func jumpToSubMenu(stdin io.WriteCloser, menu, cline string) string {
+loop:
+	for m, cs := range menus {
+		for _, c := range cs {
+			if isCmd(cline, c.name) {
+				if menu != m {
+					if menu != "main" {
+						// back to main menu from submenus
+						_, _ = stdin.Write([]byte("back\n"))
+						menu = "main"
+					}
+					if m != "main" {
+						// from main menu to submenus
+						stdin.Write([]byte("menu " + m + "\n"))
+					}
+				}
+
+				menu = m
+				break loop
+			}
 		}
 	}
 
-	return dst
+	return menu
 }
 
 func printHelp() {
