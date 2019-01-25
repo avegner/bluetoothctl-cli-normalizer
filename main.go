@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -96,6 +97,16 @@ func main() {
 }
 
 func run() error {
+	if err := setTermParams(); err != nil {
+		return fmt.Errorf("set term params: %v", err)
+	}
+	// TODO: catch signals to reset term params for all exit cases
+	defer func() {
+		if err := resetTermParams(); err != nil {
+			fmt.Fprintf(os.Stderr, "reset term params: %v", err)
+		}
+	}()
+
 	cmd := getCmd("bluetoothctl")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -109,43 +120,63 @@ func run() error {
 		errc <- runCmd(cmd)
 	}()
 
-	// TODO: pass tabs and arrows as well
 	s := bufio.NewScanner(os.Stdin)
+	s.Split(bufio.ScanBytes)
 	menu := "main"
+	buf := make([]byte, 128)
 	for s.Scan() {
-		l := s.Text()
+		bs := s.Bytes()
+		if isCtlKey(bs) {
+			_, _ = stdin.Write(bs)
+			continue
+		}
+		if strings.Index(string(bs), "\n") == -1 {
+			fmt.Fprint(os.Stdout, string(bs))
+			buf = append(buf, bs...)
+			continue
+		}
 
+		l := string(buf)
+		buf = buf[:0]
+
+		// exit commands
 		if isCmd(l, "quit") || isCmd(l, "exit") {
 			break
 		}
-
 		// ignore submenu control commands
 		if isCmd(l, "menu") || isCmd(l, "back") {
 			_, _ = stdin.Write([]byte("\n"))
 			continue
 		}
-
 		// print help for all menus
 		if isCmd(l, "help") {
 			printHelp()
 			_, _ = stdin.Write([]byte("\n"))
 			continue
 		}
-
-		menu = jumpToSubMenu(stdin, menu, l)
+		// run command in required menu
+		menu = chooseMenu(stdin, menu, l)
 		_, _ = stdin.Write([]byte(l + "\n"))
 	}
 
 	// close stdin to make bluetoothctl stop
+	// TODO: make a proper handling of errors
 	_ = stdin.Close()
 	return <-errc
+}
+
+func setTermParams() error {
+	return exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1", "-echo").Run()
+}
+
+func resetTermParams() error {
+	return exec.Command("stty", "-F", "/dev/tty", "-cbreak", "echo").Run()
 }
 
 func getCmd(name string) *exec.Cmd {
 	cmd := exec.Command(name, os.Args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
 	return cmd
 }
 
@@ -160,23 +191,22 @@ func isCmd(cline, cname string) bool {
 	return strings.Split(cline, " ")[0] == cname
 }
 
-func jumpToSubMenu(stdin io.WriteCloser, menu, cline string) string {
+func chooseMenu(stdin io.WriteCloser, menu, cline string) string {
 loop:
 	for m, cs := range menus {
 		for _, c := range cs {
 			if isCmd(cline, c.name) {
 				if menu != m {
 					if menu != "main" {
-						// back to main menu from submenus
+						// return to main menu
 						_, _ = stdin.Write([]byte("back\n"))
 						menu = "main"
 					}
 					if m != "main" {
-						// from main menu to submenus
+						// choose menu
 						stdin.Write([]byte("menu " + m + "\n"))
 					}
 				}
-
 				menu = m
 				break loop
 			}
@@ -204,4 +234,29 @@ func printHelp() {
 	for _, c := range commonCmds {
 		pl(&c)
 	}
+}
+
+func isCtlKey(bs []byte) bool {
+	keys := [][]byte{
+		// tab
+		[]byte{0x09},
+		// up
+		[]byte{0x1B, 0x5B, 0x41},
+		// down
+		[]byte{0x1B, 0x5B, 0x42},
+		// right
+		[]byte{0x1B, 0x5B, 0x43},
+		// left
+		[]byte{0x1B, 0x5B, 0x44},
+		// del
+		[]byte{0x1B, 0x5B, 0x33, 0x7E},
+	}
+
+	for _, k := range keys {
+		if bytes.Equal(k, bs) {
+			return true
+		}
+	}
+
+	return false
 }
