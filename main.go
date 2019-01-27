@@ -140,17 +140,25 @@ scan_loop:
 		for len(buf) > 0 {
 			if ctln, ctlf := isCtlByte(buf[0]); ctlf {
 				// process ctl byte
+				// TODO: process all ctl bytes locally
 				switch ctlb := buf[0]; ctln {
 				case "esc":
 					// just escape or some escape sequence
-					_, escs := getEscSeq(buf)
+					escn, escs := getEscSeq(buf)
 					if escs == nil {
 						continue scan_loop
 					}
-
 					buf = buf[len(escs):]
-					if _, err := out.Write(escs); err != nil {
-						return err
+
+					// TODO: process all escape sequences locally
+					switch escn {
+					case "up", "down":
+					case "left":
+					case "right":
+					default:
+						if _, err := out.Write(escs); err != nil {
+							return err
+						}
 					}
 				case "ctld":
 					// eof
