@@ -138,9 +138,9 @@ scan_loop:
 		buf = append(buf, s.Bytes()...)
 		// loop over buffered input (ctl bytes, escape sequences and chars)
 		for len(buf) > 0 {
-			if ctln, ctlb := isCtlByte(buf); ctlb != nil {
+			if ctln, ctlf := isCtlByte(buf[0]); ctlf {
 				// process ctl byte
-				switch ctln {
+				switch ctlb := buf[0]; ctln {
 				case "esc":
 					// just escape or some escape sequence
 					_, escs := getEscSeq(buf)
@@ -157,10 +157,10 @@ scan_loop:
 					break scan_loop
 				case "tab":
 					// ignore for now for simplicity
-					buf = buf[len(ctlb):]
+					buf = buf[1:]
 				default:
-					buf = buf[len(ctlb):]
-					if _, err := out.Write(ctlb); err != nil {
+					buf = buf[1:]
+					if _, err := out.Write([]byte{ctlb}); err != nil {
 						return err
 					}
 				}
@@ -274,7 +274,7 @@ type ctlSeq struct {
 	seq  []byte
 }
 
-func isCtlByte(bs []byte) (string, []byte) {
+func isCtlByte(b byte) (string, bool) {
 	seqs := []*ctlSeq{
 		{"tab", []byte{0x09}},
 		{"esc", []byte{0x1B}},
@@ -286,12 +286,12 @@ func isCtlByte(bs []byte) (string, []byte) {
 	}
 
 	for _, s := range seqs {
-		if bytes.Equal(s.seq, bs) {
-			return s.name, s.seq
+		if s.seq[0] == b {
+			return s.name, true
 		}
 	}
 
-	return "", nil
+	return "", false
 }
 
 func getEscSeq(bs []byte) (string, []byte) {
