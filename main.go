@@ -89,6 +89,7 @@ var (
 	}
 )
 
+// TODO: catch interrupt and terminate signals to restore terminal's settings
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -106,6 +107,7 @@ func run() error {
 		}
 	}()
 
+	// TODO: track bluetoothctl's life status
 	cmd := getCmd("bluetoothctl")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -123,75 +125,77 @@ func run() error {
 	return <-errc
 }
 
-func sniffStdin(out io.WriteCloser) {
-	buf := make([]byte, 256)
-	escSeq := false
+func sniffStdin(out io.WriteCloser) error {
+	buf := make([]byte, 0)
+	cline := ""
+	menu := "main"
 	s := bufio.NewScanner(os.Stdin)
 	s.Split(bufio.ScanBytes)
 
 scan_loop:
+	// loop over input chunks of 1 or more bytes
 	for s.Scan() {
 		buf = append(buf, s.Bytes()...)
-
-		for {
-			if escSeq {
-				escSeq = false
-
-				_, escs := getEscSeq(buf)
-				if escs == nil {
-					continue scan_loop
-				}
-
-				buf = buf[len(escs):]
-				_, _ = out.Write(escs)
-			}
-
+		// loop over buffered input (ctl bytes, escape sequences and chars)
+		for len(buf) > 0 {
 			if ctln, ctlb := isCtlByte(buf); ctlb != nil {
-				if ctln == "esc" {
-					escSeq = true
-					continue
-				}
+				// process ctl byte
+				switch ctln {
+				case "esc":
+					// just escape or some escape sequence
+					_, escs := getEscSeq(buf)
+					if escs == nil {
+						continue scan_loop
+					}
 
-				if ctln == "ctld" {
+					buf = buf[len(escs):]
+					if _, err := out.Write(escs); err != nil {
+						return err
+					}
+				case "ctld":
+					// eof
 					break scan_loop
+				case "tab":
+					// ignore for now for simplicity
+					buf = buf[len(ctlb):]
+				default:
+					buf = buf[len(ctlb):]
+					if _, err := out.Write(ctlb); err != nil {
+						return err
+					}
 				}
+			} else {
+				// process char
+				char := string(buf[0])
+				buf = buf[1:]
+				cline += char
+				fmt.Fprint(os.Stderr, char)
 
-				buf = buf[len(ctlb):]
-				_, _ = out.Write(ctlb)
-				continue
+				if char == "\n" {
+					if isCmd(cline, "quit") || isCmd(cline, "exit") {
+						break scan_loop
+					} else if isCmd(cline, "menu") || isCmd(cline, "back") {
+						if _, err := out.Write([]byte("\n")); err != nil {
+							return err
+						}
+					} else if isCmd(cline, "help") {
+						printHelp()
+						if _, err := out.Write([]byte("\n")); err != nil {
+							return err
+						}
+					} else {
+						menu = chooseMenu(out, menu, cline)
+						if _, err := out.Write([]byte(cline)); err != nil {
+							return err
+						}
+					}
+					cline = ""
+				}
 			}
-
-			break
 		}
-
-		_, _ = out.Write(buf)
-		buf = buf[:0]
 	}
-	/*		fmt.Fprintf(os.Stderr, "\n")
 
-			l := string(buf)
-			buf = buf[:0]
-
-			// exit commands
-			if isCmd(l, "quit") || isCmd(l, "exit") {
-				break
-			}
-			// ignore submenu control commands
-			if isCmd(l, "menu") || isCmd(l, "back") {
-				_, _ = stdin.Write([]byte("\n"))
-				continue
-			}
-			// print help for all menus
-			if isCmd(l, "help") {
-				printHelp()
-				_, _ = stdin.Write([]byte("\n"))
-				continue
-			}
-
-			// run command in required menu
-			menu = chooseMenu(stdin, menu, l)
-			_, _ = stdin.Write([]byte(l + "\n"))
-		}*/
+	return nil
 }
 
 func setTermParams() error {
@@ -217,7 +221,7 @@ func runCmd(cmd *exec.Cmd) error {
 }
 
 func isCmd(cline, cname string) bool {
-	return strings.Split(cline, " ")[0] == cname
+	return strings.Trim(strings.Split(cline, " ")[0], "\n") == cname
 }
 
 func chooseMenu(stdin io.WriteCloser, menu, cline string) string {
