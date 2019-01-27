@@ -100,7 +100,6 @@ func run() error {
 	if err := setTermParams(); err != nil {
 		return fmt.Errorf("set term params: %v", err)
 	}
-	// TODO: catch signals to reset term params for all exit cases
 	defer func() {
 		if err := resetTermParams(); err != nil {
 			fmt.Fprintf(os.Stderr, "reset term params: %v", err)
@@ -113,56 +112,86 @@ func run() error {
 		return fmt.Errorf("stdin pipe: %v", err)
 	}
 
-	// run bluetoothctl in a separate thread
-	// TODO: track whether bluetoothctl is still alive
 	errc := make(chan error)
 	go func() {
 		errc <- runCmd(cmd)
 	}()
 
-	s := bufio.NewScanner(os.Stdin)
-	s.Split(bufio.ScanBytes)
-	menu := "main"
-	buf := make([]byte, 128)
-	for s.Scan() {
-		bs := s.Bytes()
-		if isCtlKey(bs) {
-			_, _ = stdin.Write(bs)
-			continue
-		}
-		if strings.Index(string(bs), "\n") == -1 {
-			fmt.Fprint(os.Stdout, string(bs))
-			buf = append(buf, bs...)
-			continue
-		}
+	sniffStdin(stdin)
 
-		l := string(buf)
-		buf = buf[:0]
-
-		// exit commands
-		if isCmd(l, "quit") || isCmd(l, "exit") {
-			break
-		}
-		// ignore submenu control commands
-		if isCmd(l, "menu") || isCmd(l, "back") {
-			_, _ = stdin.Write([]byte("\n"))
-			continue
-		}
-		// print help for all menus
-		if isCmd(l, "help") {
-			printHelp()
-			_, _ = stdin.Write([]byte("\n"))
-			continue
-		}
-		// run command in required menu
-		menu = chooseMenu(stdin, menu, l)
-		_, _ = stdin.Write([]byte(l + "\n"))
-	}
-
-	// close stdin to make bluetoothctl stop
-	// TODO: make a proper handling of errors
 	_ = stdin.Close()
 	return <-errc
+}
+
+func sniffStdin(out io.WriteCloser) {
+	buf := make([]byte, 256)
+	escSeq := false
+	s := bufio.NewScanner(os.Stdin)
+	s.Split(bufio.ScanBytes)
+
+scan_loop:
+	for s.Scan() {
+		buf = append(buf, s.Bytes()...)
+
+		for {
+			if escSeq {
+				escSeq = false
+
+				_, escs := getEscSeq(buf)
+				if escs == nil {
+					continue scan_loop
+				}
+
+				buf = buf[len(escs):]
+				_, _ = out.Write(escs)
+			}
+
+			if ctln, ctlb := isCtlByte(buf); ctlb != nil {
+				if ctln == "esc" {
+					escSeq = true
+					continue
+				}
+
+				if ctln == "ctld" {
+					break scan_loop
+				}
+
+				buf = buf[len(ctlb):]
+				_, _ = out.Write(ctlb)
+				continue
+			}
+
+			break
+		}
+
+		_, _ = out.Write(buf)
+		buf = buf[:0]
+	}
+	/*		fmt.Fprintf(os.Stderr, "\n")
+
+			l := string(buf)
+			buf = buf[:0]
+
+			// exit commands
+			if isCmd(l, "quit") || isCmd(l, "exit") {
+				break
+			}
+			// ignore submenu control commands
+			if isCmd(l, "menu") || isCmd(l, "back") {
+				_, _ = stdin.Write([]byte("\n"))
+				continue
+			}
+			// print help for all menus
+			if isCmd(l, "help") {
+				printHelp()
+				_, _ = stdin.Write([]byte("\n"))
+				continue
+			}
+
+			// run command in required menu
+			menu = chooseMenu(stdin, menu, l)
+			_, _ = stdin.Write([]byte(l + "\n"))
+		}*/
 }
 
 func setTermParams() error {
@@ -236,27 +265,63 @@ func printHelp() {
 	}
 }
 
-func isCtlKey(bs []byte) bool {
-	keys := [][]byte{
-		// tab
-		[]byte{0x09},
-		// up
-		[]byte{0x1B, 0x5B, 0x41},
-		// down
-		[]byte{0x1B, 0x5B, 0x42},
-		// right
-		[]byte{0x1B, 0x5B, 0x43},
-		// left
-		[]byte{0x1B, 0x5B, 0x44},
-		// del
-		[]byte{0x1B, 0x5B, 0x33, 0x7E},
+type ctlSeq struct {
+	name string
+	seq  []byte
+}
+
+func isCtlByte(bs []byte) (string, []byte) {
+	seqs := []*ctlSeq{
+		{"tab", []byte{0x09}},
+		{"esc", []byte{0x1B}},
+		{"back", []byte{0x7F}},
+		{"ctla", []byte{0x01}},
+		{"ctle", []byte{0x05}},
+		{"ctlu", []byte{0x15}},
+		{"ctld", []byte{0x04}},
 	}
 
-	for _, k := range keys {
-		if bytes.Equal(k, bs) {
-			return true
+	for _, s := range seqs {
+		if bytes.Equal(s.seq, bs) {
+			return s.name, s.seq
 		}
 	}
 
-	return false
+	return "", nil
+}
+
+func getEscSeq(bs []byte) (string, []byte) {
+	escSeqs := []*ctlSeq{
+		{"up", []byte{0x1B, 0x5B, 0x41}},
+		{"down", []byte{0x1B, 0x5B, 0x42}},
+		{"right", []byte{0x1B, 0x5B, 0x43}},
+		{"left", []byte{0x1B, 0x5B, 0x44}},
+		{"del", []byte{0x1B, 0x5B, 0x33, 0x7E}},
+	}
+	maxLen := 0
+
+	if len(bs) == 0 {
+		return "", nil
+	}
+	if bs[0] != 0x1B {
+		panic("not escape sequence")
+	}
+	if len(bs) > 1 && bs[1] != 0x5B {
+		return "esc", []byte{0x1B}
+	}
+
+	for _, s := range escSeqs {
+		if maxLen < len(s.seq) {
+			maxLen = len(s.seq)
+		}
+		if bytes.Equal(s.seq, bs) {
+			return s.name, s.seq
+		}
+	}
+
+	if len(bs) > maxLen {
+		panic("unknown escape sequence")
+	}
+
+	return "", nil
 }
